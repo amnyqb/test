@@ -1,8 +1,8 @@
 # Feasibility tests — draft for discussion
 
 **Status:** draft v0.2, 15 September 2026, revised after an external review of v0.1.
-The plan is agreed. The defects that quick probes confirmed have been repaired
-(see below). The test harness itself is not built yet.
+The plan is agreed and the defects confirmed by quick probes are repaired. The Part 1
+harness is built, and its first two use cases, G04 and G06, are running (results below).
 
 ## What changed from v0.1
 
@@ -113,11 +113,52 @@ Deliberately left open:
 - a table's first row and first column are assumed to be its headers
 - periods are not inferred from headers
 
+## Results so far (15 September 2026)
+
+Run with `python -m feasibility run <ID> --n <N> --seed <S>`. Every figure below comes
+from generated synthetic inputs. It shows whether the mechanics work, not how the
+system performs on real documents.
+
+| Use case | Cases | Result |
+|---|---|---|
+| G04 identity | 5,000 on seed 0, then 20,000 on seed 1 | All correct. No PASS between different quantities, and none with incomplete context. |
+| G06 structural edits | 400 on seed 0, then 1,000 on seed 1, then 1,000 on seed 2 | See the rounds below. |
+
+G06 ran in rounds. Each round on unseen seeds found a rarer failure:
+
+| Round | Silent misattachments | Cause | Repair |
+|---|---|---|---|
+| Seed 0, 400 cases | 15 links in 14 cases | Figures in prose were followed by their digits and neighbouring text; labels were handed to other rows | Figures are now followed through their sentence, and label matches are checked for signs of a handover |
+| Seed 1, 1,000 cases | 2 links in 1 case | Two rows swapped labels | A label match is not trusted if the label moved to a row with a different value while the old row kept the old value |
+| Seed 2, 1,000 cases, run after all repairs and never used for tuning | None (95% confidence interval for any one case failing: 0% to 0.38%) | none | none |
+
+Each failure became a regression test in `tests/test_remap_regressions.py`. In the
+seed 2 round:
+- 9,784 links were followed.
+- 36 went to an identical repeat of the same sentence.
+- 852 (about 8%) went to review.
+- 459 were correctly left unresolved because their content was removed.
+- 1 was misattached, but already flagged for review, so no check ran on it.
+
+**Review cost after structural edits: early evidence for C01.** We measured how many
+human-reviewed links need a person again after one to three structural edits. That
+exposed one over-broad rule: whenever a formula gained a row, every reviewed link
+touching its cells was withdrawn, so a single inserted row sent all links back for
+review. The rule now withdraws only reviewed totals whose scope may have grown. On
+the same 400 cases, the share of reviewed links needing a person again fell from 56%
+to 31%. The remainder are links whose label or sentence could not be followed,
+including content that was genuinely removed.
+
+The generator deliberately uses few distinct values. That makes the label-handover
+checks fire more often than they would on typical workbooks, so 31% is not an
+estimate for real documents.
+
 ## Proposed order
 
 1. **Repair the confirmed defects.** *Done, 15 September; see above.*
-2. **Build the Part 1 harness**, starting with G04, G05, G06 and G14. *Next; nothing
-   blocks it.*
+2. **Build the Part 1 harness.** *Started. The harness is built and G04 and G06 are
+   running (see results above). Next: G05 (planted errors) and G14 (review bypass),
+   then the remaining generated cases.*
 3. **Run Part 2 on one small authorised package** as the early semantic gate. *The API
    key is configured. The package, permission to send it to the API, and an annotator
    are still needed.*

@@ -146,9 +146,12 @@ def compute_closure(
         else:
             ctx = [i for i in ids if affected.get(i, ("",))[0] == "context"]
             val = [i for i in ids if affected.get(i, ("",))[0] == "value"]
-            # A reviewed relation that shares endpoints with a formula which has
-            # just gained operands may now describe only part of that scope.
-            mirrored = [] if old.extraction_method is ExtractionMethod.EXPLICIT_FORMULA else [
+            # A reviewed total that shares components with a formula which has
+            # just gained operands may now describe only part of that scope. A
+            # link to a single component is not affected: that cell's meaning did
+            # not change, and a changed total reaches it through value flow.
+            mirrored = [] if (old.extraction_method is ExtractionMethod.EXPLICIT_FORMULA
+                              or old.type is not RelationType.SUM_OF) else [
                 g for g in grown if set(ids) & ({e.node_id for e in g.endpoints} - added)
             ]
             reasons += [f"meaning of {i} may have changed - {affected[i][1]}" for i in ctx]

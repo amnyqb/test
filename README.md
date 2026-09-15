@@ -7,8 +7,8 @@ and keeps that graph honest through revisions.
 **Status:** Milestone 1 (working core) and the core of Milestone 3 (revision
 handling, re-review and replay) are implemented and tested on synthetic fixtures.
 No empirical result is claimed; see [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
-Feasibility testing is being designed in
-[docs/FEASIBILITY_USE_CASES.md](docs/FEASIBILITY_USE_CASES.md).
+Generated feasibility tests run with `python -m feasibility`. The plan and results
+are in [docs/FEASIBILITY_USE_CASES.md](docs/FEASIBILITY_USE_CASES.md).
 
 ```bash
 ddg audit  path/to/package    --db ddg.sqlite   # import, check, report findings

@@ -55,6 +55,14 @@ relations, and an independent adjudicator.
   because its node ids are coordinates.
 - **An answered question stays answered for that version of the node.** A later
   revision reopens it only if that revision questions the node again.
+- **Figures in prose are followed through their sentence.** This has two costs:
+  - If a sentence and its figure both change, the figure goes to review, even when
+    the edit was legitimate.
+  - If a sentence is replaced by a different statement containing the same figure,
+    the link is kept but its meaning is flagged for review.
+- **A label match is refused when a handover is suspected.** A renamed, reused or
+  swapped label sends the cell to review. So does a new row that happens to hold the
+  same value as a renamed row, which costs review time.
 - **Rejecting a formula-derived relation does not survive a revision.** Formula
   relations are re-extracted from each new workbook, so a rejected one comes back
   as accepted after the next `revise`.
@@ -75,6 +83,13 @@ relations, and an independent adjudicator.
 - **Replay re-executes, it does not re-parse.** It verifies blob hashes and re-runs
   recorded checks over the node records as that run saw them. It will not detect a
   parser change made since the run.
+
+## Generated tests
+
+The feasibility harness uses synthetic inputs with few distinct values and short
+template sentences. Its pass rates show whether the mechanics work, not accuracy on
+real documents. Its review-cost figures are not estimates for real workbooks. A clean
+run bounds the failure rate only for the kinds of edit the generator makes.
 
 ## Safety scope
 

@@ -14,6 +14,21 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/ -q
 ```
 
+## Run the feasibility harness
+
+These are the generated correctness tests from the feasibility plan. Each use case
+builds tiny inputs from a seed, so every run and every failure can be reproduced.
+
+```bash
+.venv/bin/python -m feasibility list
+.venv/bin/python -m feasibility run G04 --n 5000
+.venv/bin/python -m feasibility run G06 --n 1000 --seed 2 --json g06.json
+.venv/bin/python -m feasibility repro G06 G06:2:17
+```
+
+The exit code is 1 if any generated case failed. The results are synthetic evidence
+that the mechanics work, not a measure of performance on real documents.
+
 ## Audit a package
 
 A package is a directory holding one report, its workbook, and optionally a

@@ -10,6 +10,16 @@ Every prior node ends in exactly one state:
 New nodes nobody maps onto are ``ADDED``. There is no positional fallback: a
 node that cannot be followed by its quote or its row/column labels is reported,
 never re-attached to whatever now occupies its old coordinate.
+
+Two rules came from the G06 feasibility harness, which found both failure modes
+by generating thousands of small revisions:
+
+* a figure in prose is followed *through the sentence that states it*, never on
+  the strength of its digits and whatever text happens to surround them - a
+  figure's digits are rarely distinctive, and context borrowed from neighbouring
+  paragraphs can outvote the sentence's own subject;
+* a label match is not trusted when the revision shows signs of handing that
+  label to a different row.
 """
 
 from __future__ import annotations
@@ -146,16 +156,113 @@ def _map_text_node(old: Node, new_text: str, index: dict, new_nodes: list[Node])
     return NodeChange(status, edited.reason, old)
 
 
+def _mentions_in(nodes: list[Node], paragraph: Node) -> list[Node]:
+    """The figures a parser read from one paragraph, in reading order."""
+    found = [n for n in nodes if _is_mention(n)
+             and n.selector.document_id == paragraph.selector.document_id
+             and n.selector.paragraph_index == paragraph.selector.paragraph_index]
+    return sorted(found, key=lambda n: n.selector.text_start or 0)
+
+
+def _without_figure(paragraph: Node, mention: Node) -> str | None:
+    """The paragraph's text with this figure blanked out, to compare statements."""
+    start, end = mention.selector.text_start, mention.selector.text_end
+    base = paragraph.selector.text_start
+    if start is None or end is None or base is None:
+        return None
+    text = paragraph.evidence_text
+    return text[: start - base] + "<figure>" + text[end - base:]
+
+
+def _map_mention(old: Node, old_nodes: list[Node], holder: NodeChange | None,
+                 new_nodes: list[Node]) -> NodeChange:
+    """Follow a figure through the sentence that states it."""
+    if holder is None:
+        return NodeChange(ChangeStatus.UNRESOLVED, "its sentence has no anchor to follow", old)
+    if not holder.mapped or holder.old is None or holder.new is None:
+        status = ChangeStatus.AMBIGUOUS if holder.status is ChangeStatus.AMBIGUOUS else \
+            ChangeStatus.UNRESOLVED
+        return NodeChange(status, f"its sentence could not be followed ({holder.reason})", old)
+
+    old_peers = _mentions_in(old_nodes, holder.old)
+    new_peers = _mentions_in(new_nodes, holder.new)
+    position = [p.node_id for p in old_peers].index(old.node_id)
+
+    if holder.status is ChangeStatus.UNCHANGED:
+        if len(new_peers) == len(old_peers):
+            return _compare(old, new_peers[position], "its sentence is unchanged")
+        return NodeChange(ChangeStatus.AMBIGUOUS,
+                          "its sentence is unchanged but its figures were read differently", old)
+
+    figure = old.selector.quote.exact if old.selector.quote else old.raw_value
+    same_figure = [p for p in new_peers if p.selector.quote and p.selector.quote.exact == figure]
+    if len(same_figure) == 1:
+        return _compare(old, same_figure[0], f"figure {figure!r} kept in its edited sentence")
+    if len(new_peers) == len(old_peers):
+        candidate = new_peers[position]
+        before = _without_figure(holder.old, old)
+        if before is not None and before == _without_figure(holder.new, candidate):
+            return _compare(old, candidate, "only the figure changed in its sentence")
+        return NodeChange(ChangeStatus.UNRESOLVED,
+                          "both its sentence and its figure changed; too little evidence to "
+                          "follow it", old)
+    return NodeChange(ChangeStatus.AMBIGUOUS,
+                      f"its edited sentence now holds {len(new_peers)} figures where it held "
+                      f"{len(old_peers)}", old)
+
+
 # -- workbooks --------------------------------------------------------------
 
-def _map_cell(old: Node, new_cells: list[Node]) -> NodeChange:
+def _label_handed_over(old: Node, target: Node, new_sheet: list[Node],
+                       old_sheet: list[Node]) -> str | None:
+    """Evidence that a label now names different content.
+
+    A label is the strongest anchor a cell has, but a revision can hand a label
+    to another row. Three signs of that are checked before a label match is
+    trusted: the old value now sits under a label the old version never had (the
+    row was renamed); the matched row now holds the value of a row whose label
+    has disappeared (a renamed row took this label over); or the label moved to a
+    row holding a different value while the old row still holds the old value
+    (two rows swapped labels).
+    """
+    old_labels = {n.selector.structural_path for n in old_sheet if len(n.selector.structural_path) > 1}
+    new_labels = {n.selector.structural_path for n in new_sheet if len(n.selector.structural_path) > 1}
+    for n in new_sheet:
+        path = n.selector.structural_path
+        if n is not target and len(path) > 1 and path not in old_labels \
+                and n.raw_value == old.raw_value:
+            return (f"its old value {old.raw_value!r} now sits under a new label at "
+                    f"{n.selector.describe()}")
+    if target.raw_value != old.raw_value:
+        for o in old_sheet:
+            path = o.selector.structural_path
+            if o is not old and len(path) > 1 and path not in new_labels \
+                    and o.raw_value == target.raw_value:
+                return (f"that row now holds the value of {' / '.join(path[1:])}, a label "
+                        f"that no longer exists")
+    if target.selector.cell_ref != old.selector.cell_ref and target.raw_value != old.raw_value:
+        stayed = next((n for n in new_sheet if n.selector.cell_ref == old.selector.cell_ref), None)
+        if stayed is not None and stayed.raw_value == old.raw_value:
+            return (f"the old row {old.selector.describe()} still holds {old.raw_value!r} "
+                    f"under another label")
+    return None
+
+
+def _map_cell(old: Node, new_cells: list[Node], old_cells: list[Node]) -> NodeChange:
     path = old.selector.structural_path
-    same_sheet = [n for n in new_cells if n.selector.sheet_name == old.selector.sheet_name]
+    sheet = old.selector.sheet_name
+    same_sheet = [n for n in new_cells if n.selector.sheet_name == sheet]
 
     if len(path) > 1:  # anchored by row label and/or column header
         hits = [n for n in same_sheet if n.selector.structural_path == path]
         labels = " / ".join(path[1:])
         if len(hits) == 1:
+            handed_over = _label_handed_over(
+                old, hits[0], same_sheet, [n for n in old_cells if n.selector.sheet_name == sheet])
+            if handed_over:
+                return NodeChange(ChangeStatus.AMBIGUOUS,
+                                  f"{labels} now labels {hits[0].selector.describe()}, but "
+                                  f"{handed_over}", old)
             return _compare(old, hits[0], f"followed by {labels}")
         if hits:
             return NodeChange(ChangeStatus.AMBIGUOUS,
@@ -182,14 +289,27 @@ def map_document(
     old_nodes: list[Node], new_nodes: list[Node], new_text: str | None = None
 ) -> list[NodeChange]:
     """Map every node of one prior document version onto its successor."""
-    changes: list[NodeChange] = []
     text_new = [n for n in new_nodes if n.kind is not NodeKind.SHEET_CELL]
     cells_new = [n for n in new_nodes if n.kind is NodeKind.SHEET_CELL]
+    cells_old = [n for n in old_nodes if n.kind is NodeKind.SHEET_CELL]
     index = _span_index(text_new, new_text) if new_text is not None else {}
 
+    # Statements first, so that figures can be followed through them.
+    statements: dict[str, NodeChange] = {}
+    holder_of: dict[int, NodeChange] = {}
+    if new_text is not None:
+        for old in old_nodes:
+            if old.kind in (NodeKind.SHEET_CELL, NodeKind.TABLE_CELL) or _is_mention(old):
+                continue
+            change = _map_text_node(old, new_text, index, text_new)
+            statements[old.node_id] = change
+            if old.kind is NodeKind.PARAGRAPH and old.selector.paragraph_index is not None:
+                holder_of[old.selector.paragraph_index] = change
+
+    changes: list[NodeChange] = []
     for old in old_nodes:
         if old.kind is NodeKind.SHEET_CELL:
-            changes.append(_map_cell(old, cells_new))
+            changes.append(_map_cell(old, cells_new, cells_old))
         elif old.kind is NodeKind.TABLE_CELL or new_text is None:
             hits = [n for n in text_new if n.kind is old.kind
                     and n.evidence_text == old.evidence_text
@@ -198,8 +318,11 @@ def map_document(
                            else NodeChange(ChangeStatus.UNRESOLVED if not hits
                                            else ChangeStatus.AMBIGUOUS,
                                            f"{len(hits)} matching table cells", old))
+        elif _is_mention(old):
+            changes.append(_map_mention(old, old_nodes,
+                                        holder_of.get(old.selector.paragraph_index), text_new))
         else:
-            changes.append(_map_text_node(old, new_text, index, text_new))
+            changes.append(statements[old.node_id])
 
     # Injectivity: two prior nodes landing on one new node is a misattachment
     # waiting to happen, so neither is trusted.

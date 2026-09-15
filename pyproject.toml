@@ -19,5 +19,9 @@ dev = ["pytest>=9.0"]
 [project.scripts]
 ddg = "ddg.cli:main"
 
+[tool.setuptools.packages.find]
+# Only the product package ships; feasibility/ and tests/ are development tools.
+include = ["ddg*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -51,7 +51,7 @@ after scaling), T08 (`INDIRECT` → reported and `NOT_CHECKED`, never a clean au
   unaffected are compared with their prior values; any change is reported as a
   closure miss.
 
-**Tests:** 108 passing in total, including those for the sections below.
+**Tests:** 120 passing in total, including those for the sections below.
 
 ### Fixed along the way
 
@@ -117,6 +117,26 @@ Checker and parser versions moved to 0.2.0.
   each one is answered. Amending a node's meaning withdraws every other approval that
   relied on it.
 
+## Feasibility harness — STARTED
+
+`python -m feasibility` runs the generated correctness tests from Part 1 of the
+feasibility plan. Each case is built from a seed, runs through the real code, and is
+judged against an answer known by construction.
+
+- **G04 identity:** 25,000 cases across two seed sets, all correct.
+- **G06 structural edits:** found 17 silent misattachments over two rounds, all now
+  repaired with regression tests. A third, untouched seed set (1,000 cases, about
+  11,000 judged links) found none.
+- **Re-anchoring changes that came out of this:** figures in prose are followed
+  through their sentence, never by their digits. Label matches are checked for a
+  handover to another row (a renamed, reused or swapped label).
+- **Review cost:** one inserted row used to withdraw every reviewed link on the
+  sheet. Now only reviewed totals are withdrawn. On the same generated cases, the
+  share of reviewed links needing a person again fell from 56% to 31%.
+
+All of this is synthetic evidence about mechanics. Full results are in
+[FEASIBILITY_USE_CASES.md](FEASIBILITY_USE_CASES.md).
+
 ## Not yet started
 
 - **M2 semantic discovery** — candidate retrieval and LLM-proposed edges. No
@@ -126,10 +146,8 @@ Checker and parser versions moved to 0.2.0.
 
 ## Next executable step
 
-Build the generated correctness harness from
-[FEASIBILITY_USE_CASES.md](FEASIBILITY_USE_CASES.md) (draft v0.2). Start with four
-use cases: identity and rounding (G04), planted errors (G05), structural edits (G06)
-and review bypass (G14).
+Extend the harness with planted errors (G05) and review bypass (G14), then add the
+remaining generated cases in [FEASIBILITY_USE_CASES.md](FEASIBILITY_USE_CASES.md).
 
 For the real-document semantic gate (Part 2), an Anthropic API key is configured in
 the git-ignored `.env`, but no code calls the API yet. Part 2 still needs an

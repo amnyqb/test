@@ -5,3 +5,5 @@ __pycache__/
 *.sqlite
 *.db
 .env
+tests/fixtures/generated/
+_blobs/

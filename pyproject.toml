@@ -1,0 +1,23 @@
+[project]
+name = "ddg"
+version = "0.1.0"
+description = "Document Dependency Graphs - evidence-bearing audit workbench"
+requires-python = ">=3.11"
+dependencies = [
+  "python-docx>=1.2.0",
+  "openpyxl>=3.1.5",
+  "pdfplumber>=0.11.10",
+  "pydantic>=2.13",
+  "rapidfuzz>=3.14",
+  "rank-bm25>=0.2.2",
+  "anthropic>=1.5.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0"]
+
+[project.scripts]
+ddg = "ddg.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

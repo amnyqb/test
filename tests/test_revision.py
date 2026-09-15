@@ -246,7 +246,10 @@ def test_replay_reproduces_the_original_audit_and_the_revision(t05, store, v1):
 def test_replay_reports_divergence_instead_of_rewriting_history(store, v1):
     version = store.document_versions(v1.run_id)["model.xlsx"]
     node = store.node("model.xlsx#Model!B8", version)
-    store.add_nodes([node.model_copy(update={"normalized_value": Decimal("9000000")})])
+    tampered = node.model_copy(update={"normalized_value": Decimal("9000000")})
+    store.conn.execute(  # rewriting a recorded row in place: tampering, not an amendment
+        "UPDATE nodes SET payload = ? WHERE node_id = ? AND source_version = ?",
+        (tampered.model_dump_json(), node.node_id, version))
     result = replay(store, v1.run_id)
     assert not result.faithful
     assert any("rev:revenue" in d for d in result.divergences)

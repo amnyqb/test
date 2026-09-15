@@ -79,10 +79,10 @@ def ingest_package(
         snap, nodes = ingest_file(path, package_id, blob_dir)
         store.add_snapshot(snap)
         if reuse_versions and snap.version_hash in reuse_versions:
-            nodes = [n for n in store.nodes([snap.version_hash])
+            nodes = [n for n in store.nodes([snap.version_hash], as_of=store.latest_run())
                      if n.selector.document_id == snap.document_id]
         else:
-            store.add_nodes(nodes)
+            store.add_nodes(nodes, run_id=run_id)
         store.record_document_version(run_id, package_id, snap.document_id, snap.version_hash)
         snaps.append(snap)
         all_nodes.extend(nodes)
@@ -136,7 +136,7 @@ def audit(package_dir: Path, store: Store, package_id: str = "pkg1") -> AuditRep
         with ledger.timed("apply_review"):
             manifest = load_manifest(manifest_path)
             all_nodes, reviewed, problems = apply_manifest(manifest, all_nodes, store)
-            store.add_nodes(all_nodes)
+            store.add_nodes(all_nodes, run_id=run_id)
             store.add_relations(reviewed, run_id=run_id)
             report.review_problems = problems
             report.reviewed_count = len(reviewed)

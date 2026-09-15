@@ -14,7 +14,7 @@ from ddg.models import (
 )
 
 VER = "v1"
-FULL = dict(entity="ProjectCo", scenario="base", unit="currency", currency="USD")
+FULL = dict(entity="ProjectCo", metric="capex", scenario="base", unit="currency", currency="USD")
 
 
 def node(nid, value, *, scale=None, text="evidence", **ctx):
@@ -134,8 +134,9 @@ def test_zero_denominator_is_review_not_error_or_pass():
 
 def test_decimal_arithmetic_has_no_float_error():
     """0.1 + 0.2 must equal 0.3 exactly; a float path would fail this."""
-    total = node("t", "0.3", period="FY26", **FULL)
-    ops = [node("o1", "0.1", period="FY26", **FULL), node("o2", "0.2", period="FY26", **FULL)]
+    exact = dict(period="FY26", rounding_policy="exact", **FULL)  # no rounding allowance
+    total = node("t", "0.3", **exact)
+    ops = [node("o1", "0.1", **exact), node("o2", "0.2", **exact)]
     res = run(RelationType.SUM_OF, [("total", "t"), ("operand", "o1"), ("operand", "o2")],
               [total, *ops])
     assert res.status is CheckStatus.PASS

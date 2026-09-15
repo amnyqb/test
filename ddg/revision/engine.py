@@ -117,7 +117,7 @@ def revise(package_dir: Path, store: Store, package_id: str = "pkg1") -> Revisio
         for doc_id in sorted(set(old_versions) | set(snap_by_doc)):
             old_hash = old_versions.get(doc_id)
             snap = snap_by_doc.get(doc_id)
-            old_nodes = [n for n in store.nodes([old_hash])
+            old_nodes = [n for n in store.nodes([old_hash], as_of=parent)
                          if n.selector.document_id == doc_id] if old_hash else []
 
             if snap is None:
@@ -140,7 +140,7 @@ def revise(package_dir: Path, store: Store, package_id: str = "pkg1") -> Revisio
             carried = {c.new.node_id: _carry_context(c.old, c.new)
                        for c in doc_changes if c.mapped and c.old and c.new}
             new_by_doc[doc_id] = [carried.get(n.node_id, n) for n in new_by_doc[doc_id]]
-            store.add_nodes(new_by_doc[doc_id])
+            store.add_nodes(new_by_doc[doc_id], run_id=run_id)
             report.changes += doc_changes
 
         for c in report.changes:
@@ -159,6 +159,25 @@ def revise(package_dir: Path, store: Store, package_id: str = "pkg1") -> Revisio
             {n.node_id: n.source_version for n in all_new},
         )
     report.closure = closure
+
+    # Record which meanings this revision put in question, and carry forward the
+    # ones still open, so a withdrawn review cannot return without an answer.
+    version_of = {n.node_id: n.source_version for n in all_new}
+    for node_id, (kind, why) in closure.affected.items():
+        if kind == "context" and node_id in version_of:
+            store.add_context_review(run_id, node_id, version_of[node_id], "questioned",
+                                     ACTOR, why)
+    still_open = store.open_context_questions(
+        {v for v in old_versions.values() if v}, as_of=parent)
+    carried_prefix = "still open from an earlier revision: "
+    for c in report.changes:
+        if not (c.mapped and c.old and c.new) or c.new.source_version == c.old.source_version:
+            continue
+        reason = still_open.get((c.old.node_id, c.old.source_version))
+        if reason is not None and closure.affected.get(c.new.node_id, ("",))[0] != "context":
+            store.add_context_review(
+                run_id, c.new.node_id, c.new.source_version, "questioned", ACTOR,
+                reason if reason.startswith(carried_prefix) else carried_prefix + reason)
 
     # Stale before publish: committed before a single new verdict exists.
     for o in closure.outcomes:

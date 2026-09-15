@@ -22,17 +22,42 @@ relations, and an independent adjudicator.
   PDF re-anchoring uses the same quote logic as DOCX but has no revision test.
 - **Quantity context** is authored by a reviewer in `review.json`. Recovering it
   automatically is Milestone 2's job.
-- **Narrative quantity extraction** is a deterministic regex requiring a currency
-  marker, scale word or decimal separator. It will miss quantities written in words
-  ("twelve point four million") and any unit vocabulary beyond currency.
+- **Narrative quantity extraction** is a deterministic pattern. It reads currency codes
+  and symbols, scale words and abbreviations (million, m, bn, k), accounting brackets,
+  minus signs and percentages. It still misses or leaves unresolved:
+  - quantities written in words ("twelve point four million")
+  - "m" or "k" without a currency. These stay unscaled because they may be metres, so
+    checks involving them abstain.
+  - ranges: in "10-12 million", only the second figure gets the scale
+  - any unit vocabulary beyond currency and percent
+- **Report table cells** have four known limits:
+  - The first row and first column are assumed to be headers, which is wrong for
+    tables laid out otherwise.
+  - Only currency and scale are read from headers, not periods.
+  - The heading path recorded is the document's last heading, not the heading above
+    the table.
+  - A table cell re-anchors across revisions only if its text is unchanged.
+- **Without a declared policy, rounding is inferred from how a figure is written.**
+  "12.4 million" is taken to mean 12.35 to 12.45 million. This is a stated rule, shown
+  in every trace, not something the document declares. As a result, "12 million"
+  written loosely for 12.4 million would pass. Declare `rounding_policy` where that
+  matters.
+- **Sums and ratios check for contradictions, not completeness.** A missing entity,
+  period or scenario does not block them; only declared values that disagree do.
+  Ratio rounding uses a first-order error estimate.
 - **No UI.** Findings render to the terminal; the evidence viewer is not built.
 
 ## Revision engine
 
-- **No re-review queue.** A revision can withdraw a review (`STALE`) or strand a
-  relation (`UNRESOLVED`), but there is no command yet to re-accept or amend it
-  against the new version. A `review.json` in a revised package is deliberately
-  *not* applied, because its node ids are coordinates.
+- **Review happens one relation at a time, in the terminal.** There is no review
+  UI yet. Context can be amended only on the endpoints of the relation being
+  decided. A `review.json` in a revised package is deliberately *not* applied,
+  because its node ids are coordinates.
+- **An answered question stays answered for that version of the node.** A later
+  revision reopens it only if that revision questions the node again.
+- **Rejecting a formula-derived relation does not survive a revision.** Formula
+  relations are re-extracted from each new workbook, so a rejected one comes back
+  as accepted after the next `revise`.
 - **New-link discovery is not run.** Checking existing neighbours cannot find links
   a revision creates. Added nodes are listed; searching them needs M2 retrieval.
   The one deterministic signal used is a formula gaining operands, which withdraws
@@ -48,8 +73,8 @@ relations, and an independent adjudicator.
   are re-extracted with positional ids, so their verdicts are re-run but not compared
   with the prior run.
 - **Replay re-executes, it does not re-parse.** It verifies blob hashes and re-runs
-  recorded checks over recorded nodes. A node record amended later within the same
-  version (for example by re-auditing with new context) shows up as a divergence.
+  recorded checks over the node records as that run saw them. It will not detect a
+  parser change made since the run.
 
 ## Safety scope
 

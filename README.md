@@ -5,12 +5,16 @@ A local, isolated audit workbench that builds a persistent, evidence-bearing
 and keeps that graph honest through revisions.
 
 **Status:** Milestone 1 (working core) and the core of Milestone 3 (revision
-handling and replay) are implemented and tested on synthetic fixtures. No empirical
-result is claimed — see [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+handling, re-review and replay) are implemented and tested on synthetic fixtures.
+No empirical result is claimed; see [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+Feasibility testing is being designed in
+[docs/FEASIBILITY_USE_CASES.md](docs/FEASIBILITY_USE_CASES.md).
 
 ```bash
 ddg audit  path/to/package    --db ddg.sqlite   # import, check, report findings
 ddg revise path/to/package-v2 --db ddg.sqlite   # carry the graph onto a new version
+ddg review list               --db ddg.sqlite   # what a revision handed back to a person
+ddg review decide <relation> accept|reject|amend --reviewer NAME --reason TEXT
 ddg replay <run_id>           --db ddg.sqlite   # re-execute a recorded run
 ```
 

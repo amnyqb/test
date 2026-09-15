@@ -41,7 +41,7 @@ def replay(store: Store, run_id: str) -> ReplayReport:
         if not ok:
             report.divergences.append(f"snapshot {v[:12]} is missing or its blob changed")
 
-    nodes = {n.node_id: n for n in store.nodes(versions)}
+    nodes = {n.node_id: n for n in store.nodes(versions, as_of=run_id)}
     relations = {r.relation_id: r for r in store.relations(run_id)}
     recorded = {r.check_id: r for r in store.results(run_id=run_id)}
 

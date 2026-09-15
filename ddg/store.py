@@ -8,7 +8,8 @@ Two identities matter across revisions and are kept apart deliberately:
 
 * a **node** is scoped to one source version - ``(node_id, source_version)`` -
   because a positional id such as ``Model!B8`` names different content in
-  different versions;
+  different versions. Every write of a node is kept with the run that made it,
+  so context a reviewer amends later never rewrites what an earlier run read;
 * a **relation** row is scoped to the run that asserted it, so the graph as it
   stood at any run can be read back exactly.
 
@@ -33,7 +34,7 @@ from ddg.models import (
     SourceSnapshot,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -58,10 +59,11 @@ CREATE TABLE IF NOT EXISTS document_versions (
     version_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS nodes (
+    row_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id        TEXT NOT NULL,
     source_version TEXT NOT NULL,
-    payload        TEXT NOT NULL,
-    PRIMARY KEY (node_id, source_version)
+    run_id         TEXT NOT NULL,
+    payload        TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS node_mappings (
     row_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +118,16 @@ CREATE TABLE IF NOT EXISTS costs (
     human_minutes REAL    NOT NULL DEFAULT 0,
     note          TEXT    NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_nodes_version ON nodes(source_version);
+CREATE TABLE IF NOT EXISTS context_reviews (
+    row_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id         TEXT NOT NULL,
+    node_id        TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    actor          TEXT NOT NULL,
+    reason         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nodes_version ON nodes(source_version, node_id);
 CREATE INDEX IF NOT EXISTS idx_results_check ON results(check_id);
 CREATE INDEX IF NOT EXISTS idx_results_run ON results(run_id);
 CREATE INDEX IF NOT EXISTS idx_relations_run ON relations(run_id);
@@ -144,8 +155,8 @@ class Store:
         if has_tables and version < SCHEMA_VERSION:
             self.conn.close()
             raise SchemaError(
-                f"{self.path} uses graph schema v{version or 1}, which cannot represent "
-                f"revisions (nodes were keyed by position alone). Audit into a new --db."
+                f"{self.path} uses graph schema v{version or 1}; this version of ddg needs "
+                f"v{SCHEMA_VERSION} and does not migrate older stores. Audit into a new --db."
             )
         self.conn.executescript(SCHEMA)
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -207,6 +218,14 @@ class Store:
             )
         }
 
+    def copy_document_versions(self, from_run: str, to_run: str) -> None:
+        """A run that changes no source (e.g. a review) still records what it read."""
+        self.conn.execute(
+            "INSERT INTO document_versions (run_id, package_id, document_id, version_hash)"
+            " SELECT ?, package_id, document_id, version_hash FROM document_versions"
+            " WHERE run_id = ? ORDER BY row_id", (to_run, from_run),
+        )
+
     def current_versions(self, run_id: str | None = None) -> set[str]:
         """Versions current as of ``run_id`` (default: the most recent run).
 
@@ -230,11 +249,14 @@ class Store:
             (s.version_hash, s.package_id, s.document_id, s.model_dump_json()),
         )
 
-    def add_nodes(self, nodes: Iterable[Node]) -> int:
-        """Nodes are version-scoped; re-writing one within its own version
-        (e.g. attaching reviewed context) replaces only that version's record."""
-        rows = [(n.node_id, n.source_version, n.model_dump_json()) for n in nodes]
-        self.conn.executemany("INSERT OR REPLACE INTO nodes VALUES (?,?,?)", rows)
+    def add_nodes(self, nodes: Iterable[Node], *, run_id: str) -> int:
+        """Append node records for a run. A later write of the same node and
+        version (e.g. amended context) supersedes it from that run onward only."""
+        rows = [(n.node_id, n.source_version, run_id, n.model_dump_json()) for n in nodes]
+        self.conn.executemany(
+            "INSERT INTO nodes (node_id, source_version, run_id, payload) VALUES (?,?,?,?)",
+            rows,
+        )
         return len(rows)
 
     def add_node_mapping(
@@ -282,6 +304,39 @@ class Store:
             (relation_id, actor, decided_at, state.value, reason),
         )
 
+    def add_context_review(
+        self, run_id: str, node_id: str, source_version: str, state: str, actor: str,
+        reason: str,
+    ) -> None:
+        """Append that a node's meaning was ``questioned``, ``confirmed`` or ``amended``."""
+        self.conn.execute(
+            "INSERT INTO context_reviews (run_id, node_id, source_version, state, actor, reason)"
+            " VALUES (?,?,?,?,?,?)", (run_id, node_id, source_version, state, actor, reason),
+        )
+
+    def open_context_questions(
+        self, versions: Iterable[str], *, as_of: str | None = None
+    ) -> dict[tuple[str, str], str]:
+        """``(node_id, version) -> reason`` for meanings questioned and not yet answered."""
+        vs = list(versions)
+        if not vs:
+            return {}
+        sql = (
+            "SELECT node_id, source_version, reason FROM ("
+            " SELECT c.node_id, c.source_version, c.state, c.reason,"
+            "  ROW_NUMBER() OVER (PARTITION BY c.node_id, c.source_version"
+            "   ORDER BY c.row_id DESC) AS latest"
+            " FROM context_reviews c JOIN runs r ON r.run_id = c.run_id"
+            f" WHERE c.source_version IN ({','.join('?' * len(vs))})"
+        )
+        params: list[object] = list(vs)
+        if as_of is not None:
+            sql += " AND r.rowid <= (SELECT rowid FROM runs WHERE run_id = ?)"
+            params.append(as_of)
+        sql += ") WHERE latest = 1 AND state = 'questioned'"
+        return {(row["node_id"], row["source_version"]): row["reason"]
+                for row in self.conn.execute(sql, params)}
+
     def mark_results_stale(
         self, check_ids: Iterable[str], reason: str = "", *, run_id: str | None = None
     ) -> int:
@@ -306,25 +361,44 @@ class Store:
         ).fetchone()
         return SourceSnapshot.model_validate_json(row["payload"]) if row else None
 
-    def nodes(self, versions: Iterable[str] | None = None) -> Iterator[Node]:
-        if versions is None:
-            rows = self.conn.execute("SELECT payload FROM nodes")
-        else:
+    def nodes(
+        self, versions: Iterable[str] | None = None, *, as_of: str | None = None
+    ) -> Iterator[Node]:
+        """The latest record of each node, optionally as a given run saw it."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if versions is not None:
             vs = list(versions)
             if not vs:
                 return
-            qs = ",".join("?" * len(vs))
-            rows = self.conn.execute(
-                f"SELECT payload FROM nodes WHERE source_version IN ({qs})", vs
-            )
-        for row in rows:
+            clauses.append(f"n.source_version IN ({','.join('?' * len(vs))})")
+            params += vs
+        if as_of is not None:
+            clauses.append("r.rowid <= (SELECT rowid FROM runs WHERE run_id = ?)")
+            params.append(as_of)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        sql = (
+            "SELECT payload FROM ("
+            " SELECT n.payload,"
+            "  ROW_NUMBER() OVER (PARTITION BY n.node_id, n.source_version"
+            "   ORDER BY n.row_id DESC) AS latest,"
+            "  MIN(n.row_id) OVER (PARTITION BY n.node_id, n.source_version) AS first_row"
+            " FROM nodes n JOIN runs r ON r.run_id = n.run_id" + where +
+            ") WHERE latest = 1 ORDER BY first_row"
+        )
+        for row in self.conn.execute(sql, params):
             yield Node.model_validate_json(row["payload"])
 
-    def node(self, node_id: str, source_version: str) -> Node | None:
-        row = self.conn.execute(
-            "SELECT payload FROM nodes WHERE node_id = ? AND source_version = ?",
-            (node_id, source_version),
-        ).fetchone()
+    def node(
+        self, node_id: str, source_version: str, *, as_of: str | None = None
+    ) -> Node | None:
+        sql = ("SELECT n.payload FROM nodes n JOIN runs r ON r.run_id = n.run_id"
+               " WHERE n.node_id = ? AND n.source_version = ?")
+        params: list[object] = [node_id, source_version]
+        if as_of is not None:
+            sql += " AND r.rowid <= (SELECT rowid FROM runs WHERE run_id = ?)"
+            params.append(as_of)
+        row = self.conn.execute(sql + " ORDER BY n.row_id DESC LIMIT 1", params).fetchone()
         return Node.model_validate_json(row["payload"]) if row else None
 
     def relations(self, run_id: str | None = None) -> Iterator[Relation]:
@@ -375,7 +449,7 @@ class Store:
                 for r in self.conn.execute("SELECT payload FROM snapshots")
                 if versions is None or json.loads(r["payload"])["version_hash"] in versions
             ],
-            "nodes": [n.model_dump(mode="json") for n in self.nodes(versions)],
+            "nodes": [n.model_dump(mode="json") for n in self.nodes(versions, as_of=run_id)],
             "relations": [r.model_dump(mode="json") for r in self.relations(run_id)],
             "checks": [c.model_dump(mode="json") for c in self.checks(run_id)],
             "results": [r.model_dump(mode="json") for r in self.results(run_id=run_id)],

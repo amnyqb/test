@@ -25,7 +25,7 @@ def test_injected_instructions_are_stored_as_evidence(fixtures, blob_dir):
 
 def test_injected_instruction_does_not_turn_a_failure_into_a_pass():
     """The decisive test: a document demanding PASS still gets FAIL."""
-    ctx = dict(entity="ProjectCo", period="FY26", scenario="base",
+    ctx = dict(entity="ProjectCo", metric="capex", period="FY26", scenario="base",
                unit="currency", currency="USD")
 
     def n(nid, val):

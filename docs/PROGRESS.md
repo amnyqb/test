@@ -51,7 +51,7 @@ after scaling), T08 (`INDIRECT` → reported and `NOT_CHECKED`, never a clean au
   unaffected are compared with their prior values; any change is reported as a
   closure miss.
 
-**Tests:** 62 passing.
+**Tests:** 108 passing in total, including those for the sections below.
 
 ### Fixed along the way
 
@@ -62,16 +62,76 @@ broken revisions. Nodes are now version-scoped, relations and checks are recorde
 per run, and current versions come from per-run lineage. Databases from the old
 schema are refused with a clear message rather than misread.
 
+## Re-review queue — IMPLEMENTED AND TESTED
+
+- **`ddg review list`** shows every relation a revision withdrew (`STALE`) or
+  stranded (`UNRESOLVED`), with the recorded reason and each endpoint's current
+  evidence and context.
+- **`ddg review decide`** accepts, rejects or amends a relation, records the
+  reviewer, reason and minutes, and republishes the graph as a new run. An
+  amendment can replace endpoints, change context on endpoints, or both.
+
+How it behaves:
+
+- A batch of decisions is validated whole. If one decision is invalid, the batch is
+  refused and nothing is written.
+- An `UNRESOLVED` relation cannot simply be accepted, because its endpoints point at
+  a superseded version. It must be amended with current endpoints.
+- A stranded endpoint is never displayed as whatever now occupies its old address.
+- Verdicts that a decision or an amended context could change are marked stale
+  before new verdicts are written.
+- Node records are kept per run (store schema v3). An amended context applies from
+  the review run onward, and every earlier run still replays exactly.
+- A review that was withdrawn because an endpoint's meaning was questioned cannot be
+  accepted until that meaning is confirmed or amended.
+- Amending a node's meaning withdraws every other approval that relied on it.
+- Decisions carry into later revisions.
+
+**Demonstrated:**
+
+- **T06:** confirming the questioned scale and accepting lets the check run again, and
+  it passes.
+  Amending the scale to thousands turns the result into FAIL.
+- **T07:** a blind accept is refused. Amending with the renamed row restores a pass.
+
+## Foundations repaired — IMPLEMENTED AND TESTED
+
+On 15 September, quick feasibility probes confirmed a set of defects. All are repaired,
+each with a regression test (`tests/test_foundations.py`, `tests/test_review_queue.py`).
+Checker and parser versions moved to 0.2.0.
+
+- **Identity** now requires the same metric, as well as the same entity, period,
+  scenario, unit and currency.
+- **Scale** is never assumed. A missing scale gives NEEDS_REVIEW, unless no value
+  declares one and all values come from one document.
+- **Rounding** follows a declared `rounding_policy`: `exact`, `displayed` or
+  `nearest:<step>`. Without one, it uses the precision the figure was written to, and
+  the trace says so.
+- **Sums and ratios** no longer ignore context. Declared values that contradict each
+  other give NEEDS_REVIEW. This gap was found during the repair.
+- **Prose figures:** "m", "bn", "k", accounting brackets, minus signs and percentages
+  are now read. "m" and "k" count as a scale only next to a currency.
+- **Report tables:** cells carry their row and column headers, and any currency and
+  scale those headers state.
+- **Review:** a revision records the meanings it questions, and accepting waits until
+  each one is answered. Amending a node's meaning withdraws every other approval that
+  relied on it.
+
 ## Not yet started
 
 - **M2 semantic discovery** — candidate retrieval and LLM-proposed edges. No
   authorised source package yet.
-- **M3 remainder** — a re-review queue for `STALE` relations, and new-link discovery
-  over changed regions (which depends on M2 retrieval).
+- **M3 remainder** — new-link discovery over changed regions (depends on M2 retrieval).
 - **M4 comparative evaluation** — arms, ablations and statistics not built.
 
 ## Next executable step
 
-A minimal review queue: list `STALE` / `UNRESOLVED` relations from the latest run,
-record accept / reject / amend against the *current* node ids with actor and reason,
-and republish. That closes the revise → re-review → re-check loop without M2.
+Build the generated correctness harness from
+[FEASIBILITY_USE_CASES.md](FEASIBILITY_USE_CASES.md) (draft v0.2). Start with four
+use cases: identity and rounding (G04), planted errors (G05), structural edits (G06)
+and review bypass (G14).
+
+For the real-document semantic gate (Part 2), an Anthropic API key is configured in
+the git-ignored `.env`, but no code calls the API yet. Part 2 still needs an
+authorised package, confirmation that the package may be sent to the API, and an
+independent annotator.

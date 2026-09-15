@@ -4,15 +4,26 @@ All arithmetic is Decimal. No float touches the check path, because a display
 rounding artefact reported as an inconsistency costs an analyst the same time
 as a real defect and costs the tool its credibility faster.
 
-The verdict taxonomy is load-bearing: a missing value, an incompatible context
-or an unsupported formula yields NOT_CHECKED or NEEDS_REVIEW. None of them ever
-becomes PASS.
+Every check runs the same stages, in this order, and stops at the first that
+fails:
+
+1. every value is present - otherwise NOT_CHECKED;
+2. the contexts allow the comparison: the same quantity for a pair, no
+   contradiction among the participants of a sum or ratio - otherwise
+   NEEDS_REVIEW;
+3. the scales can be reconciled; a missing scale is never assumed to be units -
+   otherwise NEEDS_REVIEW;
+4. every value's rounding is known: a declared policy, or the precision the
+   figure was written to, stated in the trace - otherwise NEEDS_REVIEW;
+5. only then are the values compared.
+
+None of the early exits ever becomes PASS.
 """
 
 from __future__ import annotations
 
 import hashlib
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from ddg import CHECKER_VERSION
 from ddg.models import (
@@ -23,7 +34,22 @@ from ddg.models import (
     Relation,
     RelationType,
 )
-from ddg.units import compatible, to_base_units
+from ddg.units import (
+    DIMENSION_FIELDS,
+    SCALES,
+    SHARED_FIELDS,
+    compatible,
+    conflicts,
+    to_base_units,
+)
+
+
+class _Stop(Exception):
+    """Ends a check early with a verdict that is never PASS."""
+
+    def __init__(self, status: CheckStatus, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
 
 
 def _hash_inputs(nodes: list[Node]) -> tuple[str, ...]:
@@ -33,15 +59,6 @@ def _hash_inputs(nodes: list[Node]) -> tuple[str, ...]:
         ).hexdigest()[:16]
         for n in nodes
     )
-
-
-def _base(node: Node) -> Decimal | None:
-    if node.normalized_value is None:
-        return None
-    try:
-        return to_base_units(node.normalized_value, node.context.scale)
-    except ValueError:
-        return None
 
 
 def _result(
@@ -76,10 +93,101 @@ def run_check(
             return _check_ratio(check, relation, nodes, run_id, trace, involved)
         return _result(check, run_id, CheckStatus.NOT_CHECKED,
                        f"no numerical checker for {relation.type.value}", trace, involved)
+    except _Stop as stop:
+        return _result(check, run_id, stop.status, str(stop), trace, involved)
     except Exception as exc:  # a checker fault is ERROR, never a pass
         return _result(check, run_id, CheckStatus.ERROR,
                        f"{type(exc).__name__}: {exc}", trace, involved)
 
+
+# -- shared stages ------------------------------------------------------------
+
+def _values_present(nodes: list[Node]) -> None:
+    missing = [n.node_id for n in nodes if n.normalized_value is None]
+    if missing:
+        raise _Stop(CheckStatus.NOT_CHECKED, f"no normalised value for {', '.join(missing)}")
+
+
+def _scales_reconcilable(nodes: list[Node], trace: list[str]) -> None:
+    """A missing scale is never assumed to be units.
+
+    Values with no declared scale are compared as written only when none of the
+    participants declares one and they all come from the same document - the
+    case of cells inside one workbook formula. Anything else is a review item.
+    """
+    unknown = [n.node_id for n in nodes
+               if n.context.scale is not None and n.context.scale.strip().lower() not in SCALES]
+    if unknown:
+        raise _Stop(CheckStatus.NEEDS_REVIEW,
+                    f"not comparable - unknown scale on {', '.join(unknown)}")
+    undeclared = [n.node_id for n in nodes if n.context.scale is None]
+    if undeclared and len(undeclared) < len(nodes):
+        raise _Stop(CheckStatus.NEEDS_REVIEW,
+                    f"not comparable - scale is declared for some values but not for "
+                    f"{', '.join(undeclared)}; a missing scale is never assumed")
+    if undeclared and len({n.selector.document_id for n in nodes}) > 1:
+        raise _Stop(CheckStatus.NEEDS_REVIEW,
+                    "not comparable - no scale is declared and the values come from "
+                    "different documents")
+    trace.append("scale: all declared" if not undeclared
+                 else "scale: none declared; compared as written within one document")
+
+
+def _half_step(node: Node) -> tuple[Decimal, str]:
+    """Half the rounding step behind a value, in base units, and how it was decided.
+
+    A declared ``rounding_policy`` wins: ``exact``, ``displayed``, or
+    ``nearest:<step>`` with the step in the value's own scale. Without one, the
+    precision the figure was written to is used - "12.4 million" stands for
+    anything from 12.35 to 12.45 million - and the trace says so, because that is
+    a stated rule rather than something the document declared.
+    """
+    assert node.normalized_value is not None
+    declared = (node.context.rounding_policy or "").strip()
+    policy = declared.lower()
+    unit = to_base_units(Decimal(1), node.context.scale)
+
+    if policy == "exact":
+        return Decimal(0), f"{node.node_id}: exact (declared)"
+    if policy.startswith("nearest:"):
+        try:
+            step = Decimal(policy.removeprefix("nearest:"))
+        except InvalidOperation:
+            step = Decimal(0)
+        if not step.is_finite() or step <= 0:
+            raise _Stop(CheckStatus.NEEDS_REVIEW,
+                        f"rounding policy {declared!r} on {node.node_id} is not understood")
+        half = step / 2 * unit
+        return half, f"{node.node_id}: rounded to the nearest {step} (declared), ±{half} base units"
+    if policy not in ("", "displayed"):
+        raise _Stop(CheckStatus.NEEDS_REVIEW,
+                    f"rounding policy {declared!r} on {node.node_id} is not supported")
+
+    exponent = node.normalized_value.as_tuple().exponent
+    if not isinstance(exponent, int):
+        raise _Stop(CheckStatus.NEEDS_REVIEW, f"{node.node_id} has no finite precision")
+    half = Decimal(5).scaleb(exponent - 1) * unit
+    origin = "declared" if policy else "no rounding policy declared"
+    return half, (f"{node.node_id}: written to {Decimal(1).scaleb(exponent)} "
+                  f"{node.context.scale or 'as written'}, ±{half} base units "
+                  f"(precision of the figure; {origin})")
+
+
+def _rounding(nodes: list[Node], trace: list[str]) -> list[Decimal]:
+    halves = []
+    for n in nodes:
+        half, why = _half_step(n)
+        trace.append(f"rounding: {why}")
+        halves.append(half)
+    return halves
+
+
+def _base(node: Node) -> Decimal:
+    assert node.normalized_value is not None
+    return to_base_units(node.normalized_value, node.context.scale)
+
+
+# -- checks ------------------------------------------------------------------
 
 def _pair_roles(relation: Relation) -> tuple[str, str]:
     if relation.type is RelationType.VALUE_FROM:
@@ -95,31 +203,29 @@ def _compare_pair(check, relation, nodes, run_id, trace, involved) -> CheckResul
         return _result(check, run_id, CheckStatus.ERROR,
                        "relation does not carry the expected two roles", trace, involved)
     a, b = nodes[ids_a[0]], nodes[ids_b[0]]
+    _values_present([a, b])
 
-    # Context compatibility is established BEFORE any comparison of values.
+    # Identity is established BEFORE any comparison of values.
     compat = compatible(a.context, b.context)
     trace.append(f"context: {compat.reason}")
     if not compat.comparable:
-        return _result(check, run_id, CheckStatus.NEEDS_REVIEW,
-                       f"not comparable - {compat.reason}", trace, involved)
+        raise _Stop(CheckStatus.NEEDS_REVIEW, f"not comparable - {compat.reason}")
+    _scales_reconcilable([a, b], trace)
+    allowed = check.tolerance + sum(_rounding([a, b], trace), Decimal(0))
 
     va, vb = _base(a), _base(b)
-    if va is None or vb is None:
-        missing = a.node_id if va is None else b.node_id
-        return _result(check, run_id, CheckStatus.NOT_CHECKED,
-                       f"no normalised value for {missing}", trace, involved)
-
     trace.append(f"{a.node_id} = {va} base units (scale={a.context.scale})")
     trace.append(f"{b.node_id} = {vb} base units (scale={b.context.scale})")
     diff = abs(va - vb)
-    trace.append(f"|difference| = {diff}, tolerance = {check.tolerance}")
+    trace.append(f"|difference| = {diff}, allowed = {allowed}")
 
-    if diff <= check.tolerance:
+    if diff <= allowed:
         return _result(check, run_id, CheckStatus.PASS,
-                       f"values agree within tolerance ({va} vs {vb})", trace, involved)
+                       f"values agree within tolerance ({va} vs {vb}, allowed ±{allowed})",
+                       trace, involved)
     # An inconsistency is detected; which side is wrong is NOT asserted.
     return _result(check, run_id, CheckStatus.FAIL,
-                   f"values disagree: {va} vs {vb} (difference {diff}). "
+                   f"values disagree: {va} vs {vb} (difference {diff}, allowed ±{allowed}). "
                    f"This identifies an inconsistency, not which source is correct.",
                    trace, involved)
 
@@ -132,22 +238,29 @@ def _check_sum(check, relation, nodes, run_id, trace, involved) -> CheckResult:
 
     total = nodes[total_ids[0]]
     operands = [nodes[i] for i in operand_ids]
+    participants = [total, *operands]
+    _values_present(participants)
+
+    clash = conflicts([n.context for n in participants], SHARED_FIELDS + DIMENSION_FIELDS)
+    trace.append(f"context: {clash.reason}")
+    if not clash.comparable:
+        raise _Stop(CheckStatus.NEEDS_REVIEW, f"not comparable - {clash.reason}")
+    _scales_reconcilable(participants, trace)
+    allowed = check.tolerance + sum(_rounding(participants, trace), Decimal(0))
+
     tv = _base(total)
     ovs = [_base(o) for o in operands]
-    if tv is None or any(v is None for v in ovs):
-        return _result(check, run_id, CheckStatus.NOT_CHECKED,
-                       "one or more operands has no normalised value", trace, involved)
-
     summed = sum(ovs, Decimal(0))
     trace.append(" + ".join(f"{o.node_id}={v}" for o, v in zip(operands, ovs)))
-    trace.append(f"sum = {summed}; total {total.node_id} = {tv}")
+    trace.append(f"sum = {summed}; total {total.node_id} = {tv}; allowed = {allowed}")
     diff = abs(summed - tv)
-    if diff <= check.tolerance:
+    if diff <= allowed:
         return _result(check, run_id, CheckStatus.PASS,
-                       f"total {tv} equals the sum of {len(operands)} operands", trace, involved)
+                       f"total {tv} equals the sum of {len(operands)} operands "
+                       f"(allowed ±{allowed})", trace, involved)
     return _result(check, run_id, CheckStatus.FAIL,
-                   f"total {tv} does not equal operand sum {summed} (difference {diff})",
-                   trace, involved)
+                   f"total {tv} does not equal operand sum {summed} "
+                   f"(difference {diff}, allowed ±{allowed})", trace, involved)
 
 
 def _check_ratio(check, relation, nodes, run_id, trace, involved) -> CheckResult:
@@ -159,21 +272,31 @@ def _check_ratio(check, relation, nodes, run_id, trace, involved) -> CheckResult
                        "RATIO_OF needs result, numerator and denominator", trace, involved)
 
     result_n, num, den = nodes[r_ids[0]], nodes[n_ids[0]], nodes[d_ids[0]]
+    participants = [result_n, num, den]
+    _values_present(participants)
+
+    clash = conflicts([n.context for n in participants], SHARED_FIELDS)
+    trace.append(f"context: {clash.reason}")
+    if not clash.comparable:
+        raise _Stop(CheckStatus.NEEDS_REVIEW, f"not comparable - {clash.reason}")
+    _scales_reconcilable(participants, trace)
+    half_r, half_n, half_d = _rounding(participants, trace)
+
     rv, nv, dv = _base(result_n), _base(num), _base(den)
-    if rv is None or nv is None or dv is None:
-        return _result(check, run_id, CheckStatus.NOT_CHECKED,
-                       "ratio operands are not all normalised", trace, involved)
-    if dv == 0:
+    if dv == 0 or abs(dv) <= half_d:
         return _result(check, run_id, CheckStatus.NEEDS_REVIEW,
-                       f"denominator {den.node_id} is zero; the ratio is undefined",
-                       trace, involved)
+                       f"denominator {den.node_id} is zero or within its rounding of zero; "
+                       f"the ratio is undefined", trace, involved)
 
     computed = nv / dv
-    trace.append(f"{nv} / {dv} = {computed}; reported {rv}")
+    # First-order propagation of the operands' rounding into the ratio.
+    propagated = (half_n + abs(computed) * half_d) / abs(dv)
+    allowed = check.tolerance + half_r + propagated
+    trace.append(f"{nv} / {dv} = {computed}; reported {rv}; allowed = {allowed}")
     diff = abs(computed - rv)
-    if diff <= check.tolerance:
+    if diff <= allowed:
         return _result(check, run_id, CheckStatus.PASS,
-                       f"ratio {rv} matches {nv}/{dv}", trace, involved)
+                       f"ratio {rv} matches {nv}/{dv} (allowed ±{allowed})", trace, involved)
     return _result(check, run_id, CheckStatus.FAIL,
-                   f"ratio {rv} does not match computed {computed} (difference {diff})",
-                   trace, involved)
+                   f"ratio {rv} does not match computed {computed} "
+                   f"(difference {diff}, allowed ±{allowed})", trace, involved)

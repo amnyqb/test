@@ -6,5 +6,5 @@ approved.
 """
 
 __version__ = "0.1.0"
-PARSER_VERSION = "ddg-parsers/0.1.0"
-CHECKER_VERSION = "ddg-checkers/0.1.0"
+PARSER_VERSION = "ddg-parsers/0.2.0"
+CHECKER_VERSION = "ddg-checkers/0.2.0"

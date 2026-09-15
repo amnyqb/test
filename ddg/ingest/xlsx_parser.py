@@ -21,6 +21,37 @@ from ddg.units import parse_decimal
 UNSUPPORTED_FUNCTIONS = ("INDIRECT", "OFFSET", "RAND", "NOW", "TODAY", "WEBSERVICE")
 
 
+def _is_label(value: object) -> bool:
+    """A text cell that names something, as opposed to a number or a formula."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and not value.startswith("=")
+        and parse_decimal(value) is None
+    )
+
+
+def structural_anchor(grid: dict[tuple[int, int], object], row: int, col: int) -> tuple[str, ...]:
+    """Row label and column header governing a quantity cell.
+
+    This is what follows a number when a row is inserted above it: ``B5`` may
+    become ``B6``, but "the Contingency row" does not move. Label cells anchor
+    on their own text instead, so they get no structural key here.
+    """
+    if _is_label(grid.get((row, col))):
+        return ()
+    out: list[str] = []
+    for c in range(col - 1, 0, -1):
+        if _is_label(grid.get((row, c))):
+            out.append(f"row={str(grid[(row, c)]).strip()}")
+            break
+    for r in range(row - 1, 0, -1):
+        if _is_label(grid.get((r, col))):
+            out.append(f"col={str(grid[(r, col)]).strip()}")
+            break
+    return tuple(out)
+
+
 def parse_xlsx(path: Path, snap: SourceSnapshot) -> tuple[SourceSnapshot, list[Node]]:
     wb_f = openpyxl.load_workbook(str(path), data_only=False, read_only=False)
     wb_v = openpyxl.load_workbook(str(path), data_only=True, read_only=False)
@@ -37,6 +68,10 @@ def parse_xlsx(path: Path, snap: SourceSnapshot) -> tuple[SourceSnapshot, list[N
     nodes: list[Node] = []
     for ws_f in wb_f.worksheets:
         ws_v = wb_v[ws_f.title]
+        grid = {
+            (c.row, c.column): c.value
+            for r in ws_f.iter_rows() for c in r if c.value is not None
+        }
         for row in ws_f.iter_rows():
             for cell in row:
                 if cell.value is None:
@@ -68,7 +103,8 @@ def parse_xlsx(path: Path, snap: SourceSnapshot) -> tuple[SourceSnapshot, list[N
                     quote=make_quote(text, 0, len(text)) if text else None,
                     sheet_name=ws_f.title,
                     cell_ref=addr,
-                    structural_path=(ws_f.title,),
+                    structural_path=(ws_f.title,)
+                    + structural_anchor(grid, cell.row, cell.column),
                 )
                 nodes.append(Node(
                     node_id=f"{snap.document_id}#{ws_f.title}!{addr}",

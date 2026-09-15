@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ddg.anchors import make_quote, remap, resolve_quote
+from ddg.anchors import make_quote, remap, resolve_by_context, resolve_quote
 from ddg.models import AnchorStatus, LocationSelector, NodeKind
 
 
@@ -50,3 +50,31 @@ def test_positional_only_selector_refuses_to_remap():
     s = LocationSelector(document_id="d", kind=NodeKind.PARAGRAPH, paragraph_index=3)
     new, res = remap(s, "any new text at all")
     assert new is None and res.status is AnchorStatus.UNRESOLVED
+
+
+SENTENCE = "Base-case CAPEX is USD 12.4 million over the build period."
+
+
+def _capex_quote():
+    i = SENTENCE.index("12.4")
+    return make_quote(SENTENCE, i, i + 4)
+
+
+def test_edited_value_is_followed_by_its_surrounding_context():
+    """12.4 -> 13.6 is the same statement revised, not a deleted one."""
+    v2 = SENTENCE.replace("12.4", "13.6")
+    res = resolve_by_context(v2, _capex_quote())
+    assert res.resolved
+    start, end = res.candidates
+    assert v2[start:end] == "13.6"
+
+
+def test_edit_without_surviving_context_is_unresolved():
+    res = resolve_by_context("This section has been withdrawn.", _capex_quote())
+    assert res.status is AnchorStatus.UNRESOLVED
+
+
+def test_context_that_now_appears_twice_is_ambiguous():
+    v2 = SENTENCE.replace("12.4", "13.6") + " " + SENTENCE.replace("12.4", "14.1")
+    res = resolve_by_context(v2, _capex_quote())
+    assert res.status is AnchorStatus.AMBIGUOUS

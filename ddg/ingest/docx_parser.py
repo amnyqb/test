@@ -58,6 +58,8 @@ def parse_docx(path: Path, snap: SourceSnapshot) -> tuple[SourceSnapshot, list[N
                 kind=kind,
                 quote=make_quote(flat, offset, offset + len(text)),
                 paragraph_index=idx,
+                text_start=offset,
+                text_end=offset + len(text),
                 structural_path=tuple(heading_path),
             )
             nodes.append(Node(
@@ -145,6 +147,8 @@ def _quantity_mentions(
                 kind=NodeKind.PARAGRAPH,
                 quote=make_quote(flat, start, end),
                 paragraph_index=para_index,
+                text_start=start,
+                text_end=end,
                 structural_path=tuple(heading_path),
             ),
             evidence_text=text,

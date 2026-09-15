@@ -7,3 +7,4 @@ __pycache__/
 .env
 tests/fixtures/generated/
 _blobs/
+*.egg-info/

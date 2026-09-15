@@ -136,3 +136,63 @@ def remap(
         else selector.paragraph_index,
     })
     return updated, res
+
+
+#: Minimum context agreement, per side, before an edited span may be followed.
+MIN_CONTEXT = 8
+
+
+def resolve_by_context(text: str, quote: TextQuote) -> Resolution:
+    """Follow a quote whose exact text was edited, using the context around it.
+
+    ``resolve_quote`` answers "is this text still here?". This answers "is the
+    place it used to occupy still here?": if the text before and after the old
+    quote both survive with something new between them, the span between is the
+    edited successor. It is how a changed value (12.4 -> 13.6) stays attached to
+    its sentence. A document boundary may stand in for one side; otherwise both
+    sides must agree for at least ``MIN_CONTEXT`` characters, and only a strictly
+    best candidate resolves. ``Resolution.offset`` is the span start and
+    ``Resolution.candidates`` holds ``(start, end)`` of the chosen span first.
+    """
+    pre = quote.prefix[-16:]
+    suf = quote.suffix[:16]
+    at_start, at_end = quote.prefix == "", quote.suffix == ""
+    if (len(pre) < MIN_CONTEXT and not at_start) or (len(suf) < MIN_CONTEXT and not at_end):
+        return Resolution(AnchorStatus.UNRESOLVED,
+                          reason="exact text gone and too little context to follow the edit")
+
+    window = 2 * len(quote.exact) + 64
+    starts = [0] if at_start else [i + len(pre) for i in _all_occurrences(text, pre)]
+    spans: list[tuple[int, int]] = []
+    for s in starts:
+        if at_end:
+            e = len(text)
+        else:
+            e = text.find(suf, s)
+            if e == -1:
+                continue
+        if 0 < e - s <= window:
+            spans.append((s, e))
+
+    if not spans:
+        return Resolution(AnchorStatus.UNRESOLVED,
+                          reason="neither the text nor its surrounding context survives")
+
+    def score(span: tuple[int, int]) -> int:
+        s, e = span
+        return (_common_suffix_len(text[max(0, s - len(quote.prefix)):s], quote.prefix)
+                + _common_prefix_len(text[e:e + len(quote.suffix)], quote.suffix))
+
+    ranked = sorted(spans, key=score, reverse=True)
+    if len(ranked) == 1 or score(ranked[0]) > score(ranked[1]):
+        s, e = ranked[0]
+        return Resolution(
+            AnchorStatus.RESOLVED, offset=s,
+            reason=f"text edited in place; context agrees ({score(ranked[0])} chars)",
+            candidates=(s, e),
+        )
+    return Resolution(
+        AnchorStatus.AMBIGUOUS,
+        reason=f"{len(spans)} places match the surrounding context equally",
+        candidates=tuple(s for s, _ in ranked),
+    )

@@ -119,6 +119,10 @@ class LocationSelector(BaseModel):
     bbox: Optional[tuple[float, float, float, float]] = None
     sheet_name: Optional[str] = None
     cell_ref: Optional[str] = None
+    # W3C TextPositionSelector over the document's flat text (DOCX). Used only
+    # to find which node owns a re-anchored span, never to identify a node.
+    text_start: Optional[int] = None
+    text_end: Optional[int] = None
     # Structural: heading path, table header path, defined name, list numbering.
     structural_path: tuple[str, ...] = ()
 

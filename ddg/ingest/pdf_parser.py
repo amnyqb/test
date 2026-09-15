@@ -10,6 +10,12 @@ from ddg.anchors import make_quote
 from ddg.models import LocationSelector, Node, NodeKind, SourceSnapshot
 
 
+def document_text(path: Path) -> str:
+    """The flat text a quote anchor resolves against: pages joined by newline."""
+    with pdfplumber.open(str(path)) as pdf:
+        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+
 def parse_pdf(path: Path, snap: SourceSnapshot) -> tuple[SourceSnapshot, list[Node]]:
     nodes: list[Node] = []
     unsupported: list[str] = []

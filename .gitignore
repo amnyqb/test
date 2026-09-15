@@ -1,0 +1,10 @@
+corpus/packages/
+.venv/
+__pycache__/
+*.pyc
+*.sqlite
+*.db
+.env
+tests/fixtures/generated/
+_blobs/
+*.egg-info/
